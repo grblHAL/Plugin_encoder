@@ -142,7 +142,7 @@ static bool mpg_move_absolute (sys_state_t state, axes_signals_t axes)
 
         sprintf(append(gcode), "F%lu", velocity);
 
-        is_moving = grbl.protocol_enqueue_gcode(gcode);
+        is_moving = grbl.enqueue_gcode(gcode);
 #ifdef UART_DEBUG
 serialWriteS(gcode);
 serialWriteS(" ");
@@ -188,7 +188,7 @@ static bool mpg_jog_relative (sys_state_t state, axes_signals_t axes)
 
         sprintf(append(gcode), "F%lu", velocity);
 
-        is_moving = grbl.protocol_enqueue_gcode(gcode);
+        is_moving = grbl.enqueue_gcode(gcode);
 
 #ifdef UART_DEBUG
 serialWriteS(gcode);
@@ -212,15 +212,15 @@ static inline void reset_override (encoder_mode_t mode)
     switch(mode) {
 
         case Encoder_FeedRate:
-            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_FEED_RESET);
+            grbl.enqueue_realtime_command(CMD_OVERRIDE_FEED_RESET);
             break;
 
         case Encoder_RapidRate:
-            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_RAPID_RESET);
+            grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_RESET);
             break;
 
         case Encoder_Spindle_RPM:
-            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_RESET);
+            grbl.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_RESET);
             break;
 
         default:
@@ -287,7 +287,7 @@ static void encoder_execute_realtime (sys_state_t state)
                     strcpy(gcode, "G90G10L20P0");
                     strcat(gcode, axis_letter[idx]);
                     strcat(gcode, "0");
-                    if(grbl.protocol_enqueue_gcode(gcode)) {
+                    if(grbl.enqueue_gcode(gcode)) {
                         mpg[idx].event.zero = Off;
                         mpg[idx].position = npos[mpg[idx].encoder->id] = mpg[idx].encoder->position = 0;
                         hal.encoder.reset(mpg[idx].encoder->id);
@@ -307,7 +307,7 @@ serialWriteS(ASCII_EOL);
 
                 if(mpg_events[idx].stop) {
                     if((stop_action = mpg[idx].flags.moving && (state & STATE_JOG))) {
-                        hal.stream.enqueue_realtime_command(CMD_JOG_CANCEL);
+                        grbl.enqueue_realtime_command(CMD_JOG_CANCEL);
 #ifdef UART_DEBUG
 serialWriteS("Jog cancel");
 serialWriteS(ASCII_EOL);
@@ -386,10 +386,10 @@ static void encoder_event (encoder_t *encoder, int32_t position)
                 update_position = true;
                 if(n_count < npos[encoder->id]) {
                     while(npos[encoder->id]-- != n_count)
-                        hal.stream.enqueue_realtime_command(CMD_OVERRIDE_FEED_FINE_MINUS);
+                        grbl.enqueue_realtime_command(CMD_OVERRIDE_FEED_FINE_MINUS);
                 } else {
                     while(npos[encoder->id]++ != n_count)
-                        hal.stream.enqueue_realtime_command(CMD_OVERRIDE_FEED_FINE_PLUS);
+                        grbl.enqueue_realtime_command(CMD_OVERRIDE_FEED_FINE_PLUS);
                 }
                 break;
 
@@ -400,19 +400,19 @@ static void encoder_event (encoder_t *encoder, int32_t position)
 
                     case DEFAULT_RAPID_OVERRIDE:
                         if(position < encoder->position)
-                            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
+                            grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
                         break;
 
                     case RAPID_OVERRIDE_MEDIUM:
                         if(position < encoder->position)
-                            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_RAPID_LOW);
+                            grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_LOW);
                         else
-                            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_RAPID_RESET);
+                            grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_RESET);
                         break;
 
                     case RAPID_OVERRIDE_LOW:
                         if(position > encoder->position)
-                            hal.stream.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
+                            grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
                         break;
 
                     default:
@@ -424,10 +424,10 @@ static void encoder_event (encoder_t *encoder, int32_t position)
                 update_position = true;
                 if(n_count < npos[encoder->id]) {
                     while(npos[encoder->id]-- != n_count)
-                        hal.stream.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_FINE_MINUS);
+                        grbl.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_FINE_MINUS);
                 } else {
                     while(npos[encoder->id]++ != n_count)
-                        hal.stream.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_FINE_PLUS);
+                        grbl.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_FINE_PLUS);
                 }
                 break;
 
@@ -768,7 +768,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        hal.stream.write("[PLUGIN:ENCODER v0.01]" ASCII_EOL);
+        hal.stream.write("[PLUGIN:ENCODER v0.02]" ASCII_EOL);
 }
 
 static uint8_t get_n_encoders (void)
