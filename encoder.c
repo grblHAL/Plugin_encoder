@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2021 Terje Io
+  Copyright (c) 2020-2022 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -542,7 +542,7 @@ static void encoder_settings_save (void)
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&encoders, sizeof(encoders), true);
 }
 
-static setting_details_t details = {
+static setting_details_t settings_details = {
     .groups = encoder_groups,
     .n_groups = QEI_ENABLE + 1,
     .settings = encoder_settings,
@@ -551,11 +551,6 @@ static setting_details_t details = {
     .load = encoder_settings_load,
     .restore = encoder_settings_restore
 };
-
-static setting_details_t *on_get_settings (void)
-{
-    return &details;
-}
 
 // Store encoder configuration. Encoder numbering sequence set by n_encoder define.
 static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t value)
@@ -768,7 +763,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        hal.stream.write("[PLUGIN:ENCODER v0.02]" ASCII_EOL);
+        hal.stream.write("[PLUGIN:ENCODER v0.03]" ASCII_EOL);
 }
 
 static uint8_t get_n_encoders (void)
@@ -781,14 +776,13 @@ bool encoder_init (uint_fast8_t n_encoders)
     if((nvs_address = nvs_alloc(sizeof(encoder_settings_t) * n_encoders))) {
         n_encoder = n_encoders;
 
+        settings_register(&settings_details);
+
         hal.encoder.get_n_encoders = get_n_encoders;
         hal.encoder.on_event = encoder_event;
 
         on_report_options = grbl.on_report_options;
         grbl.on_report_options = onReportOptions;
-
-        details.on_get_settings = grbl.on_get_settings;
-        grbl.on_get_settings = on_get_settings;
     }
 
     return nvs_address != 0;
