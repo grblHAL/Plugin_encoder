@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2022 Terje Io
+  Copyright (c) 2020-2023 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -564,7 +564,7 @@ static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t valu
     if(encoder_idx < n_encoder) switch(setting_idx) {
 
         case Setting_EncoderMode:
-            if(isintf(value) && value != NAN && value >= (float)Encoder_Universal && value < (float)Encoder_Spindle_Position)
+            if(value < Encoder_Spindle_Position)
                 encoders[encoder_idx].mode = (encoder_mode_t)value;
             else
                 status = Status_InvalidStatement;
@@ -588,7 +588,6 @@ static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t valu
         default:
             status = Status_Unhandled;
             break;
-
     }
 
     return status;
