@@ -94,11 +94,6 @@ static nvs_address_t nvs_address;
 static encoder_settings_t encoders[QEI_ENABLE];
 static uint_fast8_t n_encoder;
 
-static void encoder_settings_load (void);
-static void encoder_settings_restore (void);
-static uint32_t encoder_get_value (setting_id_t setting);
-static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t value);
-
 static char *append (char *s)
 {
     while(*s)
@@ -521,66 +516,45 @@ static void encoder_rt_report(stream_write_ptr stream_write, report_tracking_fla
         on_realtime_report(stream_write, report);
 }
 
-static const setting_group_detail_t encoder_groups [] = {
-    { Group_Root, Group_Encoders, "Encoders"},
-    { Group_Encoders, Group_Encoder0, "Encoder 0"},
-    { Group_Encoders, Group_Encoder1, "Encoder 1"},
-    { Group_Encoders, Group_Encoder2, "Encoder 2"},
-    { Group_Encoders, Group_Encoder3, "Encoder 3"},
-    { Group_Encoders, Group_Encoder4, "Encoder 4"}
-};
+// Settings handling
 
-static const setting_detail_t encoder_settings[] = {
-    { Setting_EncoderModeBase, Group_Encoder0, "Encoder mode", NULL, Format_RadioButtons, "Universal,Feed rate override,Rapid rate override,Spindle RPM override", NULL, NULL, Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL },
-    { Setting_EncoderCPRBase, Group_Encoder0, "Encoder counts per revolution", NULL, Format_Integer, "###0", "1", NULL, Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL },
-    { Setting_EncoderCPDBase, Group_Encoder0, "Encoder counts per detent", NULL, Format_Integer, "#0", "1", NULL, Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL },
-    { Setting_EncoderDblClickWindowBase, Group_Encoder0, "Encoder double click sensitivity", "ms", Format_Integer, "##0", "100", "900", Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL }
-};
-
-static void encoder_settings_save (void)
+static encoder_setting_id_t normalize_id (setting_id_t setting, uint_fast16_t *idx)
 {
-    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&encoders, sizeof(encoders), true);
-}
+    uint_fast16_t base_idx = (uint_fast16_t)setting - (uint_fast16_t)Setting_EncoderSettingsBase;
+    uint_fast8_t setting_idx = base_idx % ENCODER_SETTINGS_INCREMENT;
+    *idx = (base_idx - setting_idx) / ENCODER_SETTINGS_INCREMENT;
 
-static setting_details_t settings_details = {
-    .groups = encoder_groups,
-    .n_groups = QEI_ENABLE + 1,
-    .settings = encoder_settings,
-    .n_settings = sizeof(encoder_settings) / sizeof(setting_detail_t),
-    .save = encoder_settings_save,
-    .load = encoder_settings_load,
-    .restore = encoder_settings_restore
-};
+    return (modbus_tcp_setting_id_t)setting_idx;
+}
 
 // Store encoder configuration. Encoder numbering sequence set by n_encoder define.
 static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t value)
 {
+    uint_fast16_t idx;
     status_code_t status = Status_OK;
 
-    uint_fast16_t base_idx = (uint_fast16_t)setting - (uint_fast16_t)Setting_EncoderSettingsBase;
-    uint_fast8_t setting_idx = base_idx % ENCODER_SETTINGS_INCREMENT;
-    uint_fast8_t encoder_idx = (base_idx - setting_idx) / ENCODER_SETTINGS_INCREMENT;
+    setting = normalize_id(setting, &idx);
 
-    if(encoder_idx < n_encoder) switch(setting_idx) {
+    if(idx < n_encoder) switch((encoder_setting_id_t)setting) {
 
         case Setting_EncoderMode:
             if(value < Encoder_Spindle_Position)
-                encoders[encoder_idx].mode = (encoder_mode_t)value;
+                encoders[idx].mode = (encoder_mode_t)value;
             else
                 status = Status_InvalidStatement;
             break;
 
         case Setting_EncoderCPR:
-            encoders[encoder_idx].cpr = (uint32_t)value;
+            encoders[idx].cpr = (uint32_t)value;
             break;
 
         case Setting_EncoderCPD:
-            encoders[encoder_idx].cpd = (uint32_t)value;
+            encoders[idx].cpd = (uint32_t)value;
             break;
 
         case Setting_EncoderDblClickWindow:
             if(isintf(value) && value != NAN && value >= 100.0f && value <= 900.0f)
-                encoders[encoder_idx].dbl_click_window = (uint32_t)value;
+                encoders[idx].dbl_click_window = (uint32_t)value;
             else
                 status = Status_InvalidStatement;
             break;
@@ -596,28 +570,26 @@ static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t valu
 // Report encoder configuration. Encoder numbering sequence set by n_encoder define.
 static uint32_t encoder_get_value (setting_id_t setting)
 {
-    uint32_t value = 0;
+    uint_fast16_t value = 0, idx;
 
-    uint_fast16_t base_idx = (uint_fast16_t)setting - (uint_fast16_t)Setting_EncoderSettingsBase;
-    uint_fast8_t setting_idx = base_idx % ENCODER_SETTINGS_INCREMENT;
-    uint_fast8_t encoder_idx = (base_idx - setting_idx) / ENCODER_SETTINGS_INCREMENT;
+    setting = normalize_id(setting, &idx);
 
-    if(encoder_idx < n_encoder) switch(setting_idx) {
+    if(idx < n_encoder) switch((encoder_setting_id_t)setting) {
 
         case Setting_EncoderMode:
-            value = (uint32_t)encoders[encoder_idx].mode;
+            value = (uint32_t)encoders[idx].mode;
             break;
 
         case Setting_EncoderCPR:
-            value = encoders[encoder_idx].cpr;
+            value = encoders[idx].cpr;
             break;
 
         case Setting_EncoderCPD:
-            value = encoders[encoder_idx].cpd;
+            value = encoders[idx].cpd;
             break;
 
         case Setting_EncoderDblClickWindow:
-            value = encoders[encoder_idx].dbl_click_window;
+            value = encoders[idx].dbl_click_window;
             break;
 
         default:
@@ -625,6 +597,34 @@ static uint32_t encoder_get_value (setting_id_t setting)
     }
 
     return value;
+}
+
+static bool encoder_group_available (const setting_group_detail_t *group)
+{
+    return group->id < Group_Encoder0 + QEI_ENABLE;
+}
+
+#define ESET_OPTS { .subgroups = On, .increment = ENCODER_SETTINGS_INCREMENT }
+
+static const setting_group_detail_t encoder_groups [] = {
+    { Group_Root, Group_Encoders, "Encoders"},
+    { Group_Encoders, Group_Encoder0, "Encoder 1", encoder_group_available },
+    { Group_Encoders, Group_Encoder1, "Encoder 2", encoder_group_available },
+    { Group_Encoders, Group_Encoder2, "Encoder 3", encoder_group_available },
+    { Group_Encoders, Group_Encoder3, "Encoder 4", encoder_group_available },
+    { Group_Encoders, Group_Encoder4, "Encoder 5", encoder_group_available }
+};
+
+static const setting_detail_t encoder_settings[] = {
+    { Setting_EncoderModeBase, Group_Encoder0, "Encoder ? mode", NULL, Format_RadioButtons, "Universal,Feed rate override,Rapid rate override,Spindle RPM override", NULL, NULL, Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL, ESET_OPTS },
+    { Setting_EncoderCPRBase, Group_Encoder0, "Encoder ? counts per revolution", NULL, Format_Integer, "###0", "1", NULL, Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL, ESET_OPTS },
+    { Setting_EncoderCPDBase, Group_Encoder0, "Encoder ? counts per detent", NULL, Format_Integer, "#0", "1", NULL, Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL, ESET_OPTS },
+    { Setting_EncoderDblClickWindowBase, Group_Encoder0, "Encoder ? double click sensitivity", "ms", Format_Integer, "##0", "100", "900", Setting_NonCoreFn, encoder_set_value, encoder_get_value, NULL, ESET_OPTS }
+};
+
+static void encoder_settings_save (void)
+{
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&encoders, sizeof(encoders), true);
 }
 
 static void encoder_settings_restore (void)
@@ -638,7 +638,7 @@ static void encoder_settings_restore (void)
         encoders[idx].dbl_click_window = 500; // ms
     }
 
-    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&encoders, sizeof(encoders), true);
+    encoder_settings_save();
 }
 
 static void encoder_settings_load (void)
@@ -646,6 +646,31 @@ static void encoder_settings_load (void)
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&encoders, nvs_address, sizeof(encoders), true) != NVS_TransferResult_OK)
         encoder_settings_restore();
 }
+
+static bool encoder_settings_iterator (const setting_detail_t *setting, setting_output_ptr callback, void *data)
+{
+    uint_fast16_t idx, instance;
+
+    normalize_id(setting->id, &instance);
+
+    for(idx = 0; idx < QEI_ENABLE; idx++)
+        callback(setting, idx * ENCODER_SETTINGS_INCREMENT + instance, data);
+
+    return true;
+}
+
+static setting_details_t settings_details = {
+    .groups = encoder_groups,
+    .n_groups = QEI_ENABLE + 1,
+    .settings = encoder_settings,
+    .n_settings = sizeof(encoder_settings) / sizeof(setting_detail_t),
+    .save = encoder_settings_save,
+    .load = encoder_settings_load,
+    .restore = encoder_settings_restore,
+    .iterator = encoder_settings_iterator
+};
+
+//
 
 bool encoder_start (encoder_t *encoder)
 {
@@ -762,7 +787,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        hal.stream.write("[PLUGIN:ENCODER v0.03]" ASCII_EOL);
+        hal.stream.write("[PLUGIN:ENCODER v0.04]" ASCII_EOL);
 }
 
 static uint8_t get_n_encoders (void)
