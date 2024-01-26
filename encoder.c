@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2023 Terje Io
+  Copyright (c) 2020-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -223,7 +223,7 @@ static inline void reset_override (encoder_mode_t mode)
     }
 }
 
-static void encoder_report_mode (uint_fast16_t state)
+static void encoder_report_mode (void *data)
 {
     if(override_encoder) {
 
@@ -352,7 +352,7 @@ static void encoder_event (encoder_t *encoder, int32_t position)
             sys.report.encoder = On;
             encoder->event.click = Off;
             encoder->mode = encoder->mode == Encoder_FeedRate ? Encoder_RapidRate : (encoder->mode == Encoder_RapidRate ? Encoder_Spindle_RPM : Encoder_FeedRate);
-            protocol_enqueue_rt_command(encoder_report_mode); // Output mode change message from foreground process.
+            protocol_enqueue_foreground_task(encoder_report_mode, NULL); // Output mode change message from foreground process.
         } else if(encoder->settings->mode == Encoder_MPG) {
             if(++encoder->axis == N_AXIS)
                 encoder->axis = X_AXIS;
@@ -787,7 +787,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        hal.stream.write("[PLUGIN:ENCODER v0.04]" ASCII_EOL);
+        hal.stream.write("[PLUGIN:ENCODER v0.05]" ASCII_EOL);
 }
 
 static uint8_t get_n_encoders (void)
