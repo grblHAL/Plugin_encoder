@@ -317,7 +317,7 @@ serialWriteS(ASCII_EOL);
                         float target[N_AXIS];
                         system_convert_array_steps_to_mpos(target, sys.position);
                         mpg[idx].flags.moving = On;
-                        mpg[idx].pos = target[idx] - gc_get_offset(idx);
+                        mpg[idx].pos = target[idx] - gc_get_offset(idx, false);
                     }
 
                     move_action = true;
@@ -787,7 +787,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        hal.stream.write("[PLUGIN:ENCODER v0.05]" ASCII_EOL);
+        hal.stream.write("[PLUGIN:ENCODER v0.06]" ASCII_EOL);
 }
 
 static uint8_t get_n_encoders (void)
