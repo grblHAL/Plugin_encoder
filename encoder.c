@@ -5,18 +5,18 @@
 
   Copyright (c) 2020-2024 Terje Io
 
-  Grbl is free software: you can redistribute it and/or modify
+  grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
   (at your option) any later version.
 
-  Grbl is distributed in the hope that it will be useful,
+  grblHAL is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
   GNU General Public License for more details.
 
   You should have received a copy of the GNU General Public License
-  along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+  along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include <math.h>
@@ -524,7 +524,7 @@ static encoder_setting_id_t normalize_id (setting_id_t setting, uint_fast16_t *i
     uint_fast8_t setting_idx = base_idx % ENCODER_SETTINGS_INCREMENT;
     *idx = (base_idx - setting_idx) / ENCODER_SETTINGS_INCREMENT;
 
-    return (modbus_tcp_setting_id_t)setting_idx;
+    return (encoder_setting_id_t)setting_idx;
 }
 
 // Store encoder configuration. Encoder numbering sequence set by n_encoder define.
@@ -659,17 +659,6 @@ static bool encoder_settings_iterator (const setting_detail_t *setting, setting_
     return true;
 }
 
-static setting_details_t settings_details = {
-    .groups = encoder_groups,
-    .n_groups = QEI_ENABLE + 1,
-    .settings = encoder_settings,
-    .n_settings = sizeof(encoder_settings) / sizeof(setting_detail_t),
-    .save = encoder_settings_save,
-    .load = encoder_settings_load,
-    .restore = encoder_settings_restore,
-    .iterator = encoder_settings_iterator
-};
-
 //
 
 bool encoder_start (encoder_t *encoder)
@@ -787,7 +776,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        hal.stream.write("[PLUGIN:ENCODER v0.06]" ASCII_EOL);
+        report_plugin("ENCODER", "0.06");
 }
 
 static uint8_t get_n_encoders (void)
@@ -797,6 +786,17 @@ static uint8_t get_n_encoders (void)
 
 bool encoder_init (uint_fast8_t n_encoders)
 {
+    static setting_details_t settings_details = {
+        .groups = encoder_groups,
+        .n_groups = QEI_ENABLE + 1,
+        .settings = encoder_settings,
+        .n_settings = sizeof(encoder_settings) / sizeof(setting_detail_t),
+        .save = encoder_settings_save,
+        .load = encoder_settings_load,
+        .restore = encoder_settings_restore,
+        .iterator = encoder_settings_iterator
+    };
+
     if((nvs_address = nvs_alloc(sizeof(encoder_settings_t) * n_encoders))) {
         n_encoder = n_encoders;
 
@@ -812,4 +812,4 @@ bool encoder_init (uint_fast8_t n_encoders)
     return nvs_address != 0;
 }
 
-#endif
+#endif // QEI_ENABLE
