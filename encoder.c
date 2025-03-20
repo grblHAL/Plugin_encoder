@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2024 Terje Io
+  Copyright (c) 2020-2025 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -26,17 +26,10 @@
 
 #if QEI_ENABLE
 
-#ifdef ARDUINO
-#include "../grbl/grbl.h"
-#include "../grbl/report.h"
-#include "../grbl/protocol.h"
-#include "../grbl/nvs_buffer.h"
-#else
 #include "grbl/grbl.h"
 #include "grbl/report.h"
 #include "grbl/protocol.h"
 #include "grbl/nvs_buffer.h"
-#endif
 
 #include <stdio.h>
 #include <string.h>

@@ -22,11 +22,7 @@
 #ifndef _ENCODER_H_
 #define _ENCODER_H_
 
-#ifdef ARDUINO
-#include "../driver.h"
-#else
 #include "driver.h"
-#endif
 
 #if QEI_ENABLE
 
