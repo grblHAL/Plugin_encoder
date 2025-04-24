@@ -30,6 +30,7 @@
 #include "grbl/report.h"
 #include "grbl/protocol.h"
 #include "grbl/nvs_buffer.h"
+#include "grbl/task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -345,7 +346,7 @@ static void encoder_event (encoder_t *encoder, int32_t position)
             sys.report.encoder = On;
             encoder->event.click = Off;
             encoder->mode = encoder->mode == Encoder_FeedRate ? Encoder_RapidRate : (encoder->mode == Encoder_RapidRate ? Encoder_Spindle_RPM : Encoder_FeedRate);
-            protocol_enqueue_foreground_task(encoder_report_mode, NULL); // Output mode change message from foreground process.
+            task_add_immediate(encoder_report_mode, NULL); // Output mode change message from foreground process.
         } else if(encoder->settings->mode == Encoder_MPG) {
             if(++encoder->axis == N_AXIS)
                 encoder->axis = X_AXIS;
@@ -769,7 +770,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("ENCODER", "0.06");
+        report_plugin("ENCODER", "0.07");
 }
 
 static uint8_t get_n_encoders (void)
