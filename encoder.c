@@ -424,14 +424,23 @@ static void encoder_event (encoder_t *encoder, int32_t position)
             case Encoder_MPG_X:
             case Encoder_MPG_Y:
             case Encoder_MPG_Z:
-#if N_AXIS > 3
+#ifdef A_AXIS
             case Encoder_MPG_A:
 #endif
-#if N_AXIS > 4
+#ifdef B_AXIS
             case Encoder_MPG_B:
 #endif
-#if N_AXIS > 5
+#ifdef C_AXIS
             case Encoder_MPG_C:
+#endif
+#ifdef U_AXIS
+            case Encoder_MPG_U:
+#endif
+#ifdef V_AXIS
+            case Encoder_MPG_V:
+#endif
+#ifdef W_AXIS
+            case Encoder_MPG_W:
 #endif
                 update_position = true;
 
@@ -470,14 +479,23 @@ static void encoder_event (encoder_t *encoder, int32_t position)
         case Encoder_MPG_X:
         case Encoder_MPG_Y:
         case Encoder_MPG_Z:
-#if N_AXIS > 3
+#ifdef A_AXIS
         case Encoder_MPG_A:
 #endif
-#if N_AXIS > 4
+#ifdef B_AXIS
         case Encoder_MPG_B:
 #endif
-#if N_AXIS > 5
+#ifdef C_AXIS
         case Encoder_MPG_C:
+#endif
+#ifdef U_AXIS
+        case Encoder_MPG_U:
+#endif
+#ifdef V_AXIS
+        case Encoder_MPG_V:
+#endif
+#ifdef W_AXIS
+        case Encoder_MPG_W:
 #endif
 
             mpg_spin_lock = true;
@@ -706,24 +724,45 @@ bool encoder_start (encoder_t *encoder)
                 mpg[Z_AXIS].encoder = &encoder[idx];
                 has_mpg_encoder = true;
                 break;
-#if N_AXIS > 3
+#ifdef A_AXIS
             case Encoder_MPG_A:
                 encoder[idx].axis   = A_AXIS;
                 mpg[A_AXIS].encoder = &encoder[idx];
                 has_mpg_encoder = true;
                 break;
 #endif
-#if N_AXIS > 4
+#ifdef B_AXIS
             case Encoder_MPG_B:
                 encoder[idx].axis   = B_AXIS;
                 mpg[B_AXIS].encoder = &encoder[idx];
                 has_mpg_encoder = true;
                 break;
 #endif
-#if N_AXIS > 5
+#ifdef C_AXIS
             case Encoder_MPG_C:
                 encoder[idx].axis   = C_AXIS;
                 mpg[C_AXIS].encoder = &encoder[idx];
+                has_mpg_encoder = true;
+                break;
+#endif
+#ifdef U_AXIS
+            case Encoder_MPG_U:
+                encoder[idx].axis   = U_AXIS;
+                mpg[U_AXIS].encoder = &encoder[idx];
+                has_mpg_encoder = true;
+                break;
+#endif
+#ifdef V_AXIS
+            case Encoder_MPG_V:
+                encoder[idx].axis   = V_AXIS;
+                mpg[V_AXIS].encoder = &encoder[idx];
+                has_mpg_encoder = true;
+                break;
+#endif
+#ifdef W_AXIS
+            case Encoder_MPG_W:
+                encoder[idx].axis   = W_AXIS;
+                mpg[W_AXIS].encoder = &encoder[idx];
                 has_mpg_encoder = true;
                 break;
 #endif
@@ -770,7 +809,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("ENCODER", "0.07");
+        report_plugin("ENCODER", "0.08");
 }
 
 static uint8_t get_n_encoders (void)
