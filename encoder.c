@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2025 Terje Io
+  Copyright (c) 2020-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -343,7 +343,7 @@ static void encoder_event (encoder_t *encoder, int32_t position)
     if(encoder->event.click) {
 
         if(encoder->settings->mode == Encoder_Universal) {
-            sys.report.encoder = On;
+            report_add_realtime(Report_Encoder);
             encoder->event.click = Off;
             encoder->mode = encoder->mode == Encoder_FeedRate ? Encoder_RapidRate : (encoder->mode == Encoder_RapidRate ? Encoder_Spindle_RPM : Encoder_FeedRate);
             task_add_immediate(encoder_report_mode, NULL); // Output mode change message from foreground process.
@@ -809,7 +809,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("ENCODER", "0.08");
+        report_plugin("ENCODER", "0.09");
 }
 
 static uint8_t get_n_encoders (void)
