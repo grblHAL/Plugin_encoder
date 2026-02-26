@@ -19,25 +19,61 @@
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "driver.h"
+
+#if ENCODER_ENABLE == 1 ||  ENCODER_ENABLE == 2
+
 #include <math.h>
 #include <stdlib.h>
-
-#include "encoder.h"
-
-#if QEI_ENABLE
+#include <stdio.h>
+#include <string.h>
 
 #include "grbl/grbl.h"
 #include "grbl/report.h"
 #include "grbl/protocol.h"
 #include "grbl/nvs_buffer.h"
 #include "grbl/task.h"
-
-#include <stdio.h>
-#include <string.h>
+#include "grbl/encoders.h"
+#include "grbl/state_machine.h"
 
 #define MIN(a, b) (((a) > (b)) ? (b) : (a))
+#define QEI_VELOCITY_TIMEOUT 100
 
 typedef bool (*mpg_algo_ptr)(sys_state_t state, axes_signals_t axes);
+
+typedef enum {
+    Encoder_Universal = 0,
+    Encoder_FeedRate,
+    Encoder_RapidRate,
+    Encoder_Spindle_RPM,
+    Encoder_MPG,
+    Encoder_MPG_X,
+    Encoder_MPG_Y,
+    Encoder_MPG_Z,
+    Encoder_MPG_A,
+    Encoder_MPG_B,
+    Encoder_MPG_C,
+    Encoder_MPG_U,
+    Encoder_MPG_V,
+    Encoder_MPG_W,
+    Encoder_Spindle_Position
+} encoder_mode_t;
+
+typedef union {
+    uint8_t flags;
+    uint8_t value;
+    struct {
+        uint8_t single_count_per_detent :1;
+    };
+} encoder_flags_t;
+
+typedef struct {
+    encoder_mode_t mode;
+    uint32_t cpr;               //!< Count per revolution.
+    uint32_t cpd;               //!< Count per detent.
+    uint32_t dbl_click_window;  //!< ms.
+    encoder_flags_t flags;
+} encoder_settings_t;
 
 typedef union {
     uint8_t events;
@@ -64,29 +100,41 @@ typedef union {
 } mpg_flags_t;
 
 typedef struct {
+    encoder_t *encoder;
+    int32_t npos;
+    encoder_mode_t mode;
+    uint_fast8_t id;
+    uint_fast8_t axis;          //!< Axis index for MPG encoders, 0xFF for others.
+    int32_t position;
+    uint32_t velocity;
+    encoder_settings_t *settings;
+} my_encoder_t;
+
+typedef struct {
     int32_t position;
     mpg_event_t event;
     mpg_flags_t flags;
     uint32_t next_event;
     float pos;
     float scale_factor;
-    encoder_t *encoder;
+    my_encoder_t *enc;
     mpg_algo_ptr handler;
 } mpg_t;
 
+static my_encoder_t enc[QEI_ENABLE] = {0};
 static char gcode[50];
-static int32_t npos[QEI_ENABLE] = {0};
 static mpg_t mpg[N_AXIS] = {0};
 static mpg_event_t mpg_events[N_AXIS] = {0};
-static encoder_t *override_encoder = NULL; // NULL when no Encoder_Universal available
 static axes_signals_t mpg_event = {0};
 static volatile bool mpg_spin_lock = false;
-static on_realtime_report_ptr on_realtime_report = NULL;
-static on_execute_realtime_ptr on_execute_realtime = NULL;
-static on_report_options_ptr on_report_options;
+static bool has_mpg_encoder = false;
+static my_encoder_t *override_encoder = NULL; // NULL when no Encoder_Universal available
 static nvs_address_t nvs_address;
 static encoder_settings_t encoders[QEI_ENABLE];
-static uint_fast8_t n_encoder;
+static uint_fast8_t n_encoder = 0;
+
+static on_realtime_report_ptr on_realtime_report = NULL;
+static on_report_options_ptr on_report_options;
 
 static char *append (char *s)
 {
@@ -112,13 +160,13 @@ static bool mpg_move_absolute (sys_state_t state, axes_signals_t axes)
     while(axes.mask) {
 
         if(axes.mask & 0x01) {
-            if((delta = mpg[idx].position - npos[mpg[idx].encoder->id]) != 0) {
+            if((delta = mpg[idx].position - mpg[idx].enc->npos) != 0) {
                 float pos_delta = (float)delta * mpg[idx].scale_factor / 100.0f;
-                mpg[idx].position = npos[idx];
-                velocity = velocity == 0 ? mpg[idx].encoder->velocity : MIN(mpg[idx].encoder->velocity, velocity);
+                mpg[idx].position = enc->npos;
+                velocity = velocity == 0 ? enc->velocity : MIN(enc->velocity, velocity);
                 if(!gc_state.modal.distance_incremental)
                     mpg[idx].pos += pos_delta;
-                velocity = velocity == 0 ? mpg[idx].encoder->velocity : MIN(mpg[idx].encoder->velocity, velocity);
+                velocity = velocity == 0 ? enc->velocity : MIN(enc->velocity, velocity);
                 sprintf(append(gcode), "%s%.3f", axis_letter[idx], gc_state.modal.distance_incremental ? pos_delta : mpg[idx].pos);
             }
         }
@@ -161,10 +209,10 @@ static bool mpg_jog_relative (sys_state_t state, axes_signals_t axes)
     while(axes.mask) {
 
         if(axes.mask & 0x01) {
-            if((delta = mpg[idx].position - npos[mpg[idx].encoder->id]) != 0) {
+            if((delta = mpg[idx].position - mpg[idx].enc->npos) != 0) {
                 float pos_delta = (float)delta * mpg[idx].scale_factor / 100.0f;
-                mpg[idx].position = npos[idx];
-                velocity = velocity == 0 ? mpg[idx].encoder->velocity : MIN(mpg[idx].encoder->velocity, velocity);
+                mpg[idx].position = mpg[idx].enc->npos;
+                velocity = velocity == 0 ? enc->velocity : MIN(enc->velocity, velocity);
                 sprintf(append(gcode), "%s%.3f", axis_letter[idx], pos_delta);
             }
         }
@@ -221,7 +269,7 @@ static void encoder_report_mode (void *data)
 {
     if(override_encoder) {
 
-        switch(override_encoder->mode) {
+        switch(override_encoder->settings->mode) {
 
             case Encoder_FeedRate:
                 hal.stream.write("[MSG:Encoder mode feed rate]" ASCII_EOL);
@@ -241,13 +289,11 @@ static void encoder_report_mode (void *data)
     }
 }
 
-static void encoder_execute_realtime (sys_state_t state)
+static void encoder_poll (void *data)
 {
-    static uint32_t elapsed = 0;
+    sys_state_t state = state_get();
 
-    uint32_t ms = hal.get_elapsed_ticks();
-
-    if(ms != elapsed && mpg_event.mask && (state == STATE_IDLE || (state & STATE_JOG))) {
+    if(mpg_event.mask && (state == STATE_IDLE || (state & STATE_JOG))) {
 
         bool move_action = false, stop_action = false;
         uint_fast8_t idx = 0;
@@ -278,8 +324,8 @@ static void encoder_execute_realtime (sys_state_t state)
                     strcat(gcode, "0");
                     if(grbl.enqueue_gcode(gcode)) {
                         mpg[idx].event.zero = Off;
-                        mpg[idx].position = npos[mpg[idx].encoder->id] = mpg[idx].encoder->position = 0;
-                        hal.encoder.reset(mpg[idx].encoder->id);
+                        mpg[idx].position = mpg[idx].enc->npos = 0;
+                        mpg[idx].enc->encoder->reset(mpg[idx].enc->encoder);
                     }
                 }
 
@@ -330,33 +376,31 @@ serialWriteS(ASCII_EOL);
         if(move_action && !mpg[0].handler(state, axes))
             mpg_event.mask |= 0; //axes.mask; // gcode was rejected, restore events
     }
-
-    elapsed = ms;
-
-    on_execute_realtime(state);
 }
 
-static void encoder_event (encoder_t *encoder, int32_t position)
+static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *context)
 {
     bool update_position = false;
 
-    if(encoder->event.click) {
+    my_encoder_t *enc = (my_encoder_t *)context;
 
-        if(encoder->settings->mode == Encoder_Universal) {
+    if(events->click) {
+
+        if(enc->settings->mode == Encoder_Universal) {
             report_add_realtime(Report_Encoder);
-            encoder->event.click = Off;
-            encoder->mode = encoder->mode == Encoder_FeedRate ? Encoder_RapidRate : (encoder->mode == Encoder_RapidRate ? Encoder_Spindle_RPM : Encoder_FeedRate);
+            events->click = Off;
+            enc->mode = enc->mode == Encoder_FeedRate ? Encoder_RapidRate : (enc->mode == Encoder_RapidRate ? Encoder_Spindle_RPM : Encoder_FeedRate);
             task_add_immediate(encoder_report_mode, NULL); // Output mode change message from foreground process.
-        } else if(encoder->settings->mode == Encoder_MPG) {
-            if(++encoder->axis == N_AXIS)
-                encoder->axis = X_AXIS;
-            mpg[encoder->axis].position = npos[encoder->id] = encoder->position = 0;
-            mpg[encoder->axis].event.events = encoder->event.events = 0;
-            hal.encoder.reset(encoder->id);
+        } else if(enc->settings->mode == Encoder_MPG) {
+            if(++enc->axis == N_AXIS)
+                enc->axis = X_AXIS;
+            mpg[enc->axis].position = enc->npos = enc->position = 0;
+            mpg[enc->axis].event.events = events->events = 0;
+            encoder->reset(encoder);
         }
     }
 
-    if(encoder->event.position_changed) {
+    if(events->position_changed) {
 
 #ifdef UART_DEBUG
         itoa(position, gcode, 10);
@@ -364,43 +408,44 @@ static void encoder_event (encoder_t *encoder, int32_t position)
         serialWriteS(gcode);
         serialWriteS(ASCII_EOL);
 #endif
+        encoder_data_t *data = encoder->get_data(encoder);
 
-        int32_t n_count = (position * 100L) / (int32_t)encoder->settings->cpr;
+        int32_t position, n_count = ((position = data->position) * 100L) / (int32_t)enc->settings->cpr;
 
-        encoder->event.position_changed = Off;
+        events->position_changed = Off;
 
-        if(n_count != npos[encoder->id] || encoder->velocity == 0) switch(encoder->mode) {
+        if(n_count != enc->npos || data->velocity == 0) switch(enc->mode) {
 
             case Encoder_FeedRate:
                 update_position = true;
-                if(n_count < npos[encoder->id]) {
-                    while(npos[encoder->id]-- != n_count)
+                if(n_count < enc->npos) {
+                    while(enc->npos-- != n_count)
                         grbl.enqueue_realtime_command(CMD_OVERRIDE_FEED_FINE_MINUS);
                 } else {
-                    while(npos[encoder->id]++ != n_count)
+                    while(enc->npos++ != n_count)
                         grbl.enqueue_realtime_command(CMD_OVERRIDE_FEED_FINE_PLUS);
                 }
                 break;
 
             case Encoder_RapidRate:
-                update_position = abs(position - encoder->position) >= encoder->settings->cpd;
+                update_position = abs(position - enc->position) >= enc->settings->cpd;
 
                 if(update_position) switch(sys.override.rapid_rate) {
 
                     case DEFAULT_RAPID_OVERRIDE:
-                        if(position < encoder->position)
+                        if(position < enc->position)
                             grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
                         break;
 
                     case RAPID_OVERRIDE_MEDIUM:
-                        if(position < encoder->position)
+                        if(position < enc->position)
                             grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_LOW);
                         else
                             grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_RESET);
                         break;
 
                     case RAPID_OVERRIDE_LOW:
-                        if(position > encoder->position)
+                        if(position > enc->position)
                             grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
                         break;
 
@@ -411,11 +456,11 @@ static void encoder_event (encoder_t *encoder, int32_t position)
 
             case Encoder_Spindle_RPM:
                 update_position = true;
-                if(n_count < npos[encoder->id]) {
-                    while(npos[encoder->id]-- != n_count)
+                if(n_count < enc->npos) {
+                    while(enc->npos-- != n_count)
                         grbl.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_FINE_MINUS);
                 } else {
-                    while(npos[encoder->id]++ != n_count)
+                    while(enc->npos++ != n_count)
                         grbl.enqueue_realtime_command(CMD_OVERRIDE_SPINDLE_FINE_PLUS);
                 }
                 break;
@@ -445,12 +490,12 @@ static void encoder_event (encoder_t *encoder, int32_t position)
                 update_position = true;
 
                 mpg_spin_lock = true;
-                if(mpg[encoder->axis].encoder->velocity == 0) {
-                    mpg[encoder->axis].event.stop = On; // mpg[encoder->axis].flags.moving;
-                    mpg_event.mask |= (1 << encoder->axis);
+                if(enc->velocity == 0) {
+                    mpg[enc->axis].event.stop = On; // mpg[enc->axis].flags.moving;
+                    mpg_event.mask |= (1 << enc->axis);
                 } else {
-                    mpg[encoder->axis].event.position_changed = On;
-                    mpg_event.mask |= (1 << encoder->axis);
+                    mpg[enc->axis].event.position_changed = On;
+                    mpg_event.mask |= (1 << enc->axis);
                 }
                 mpg_spin_lock = false;
                 break;
@@ -460,19 +505,19 @@ static void encoder_event (encoder_t *encoder, int32_t position)
         }
 
         if(update_position) {
-            encoder->position = position;
-            npos[encoder->id] = n_count;
+            enc->position = position;
+            enc->npos = n_count;
         }
     }
 
-    if(encoder->event.events) switch(encoder->mode) {
+    if(events->events) switch(enc->mode) {
 
         case Encoder_FeedRate:
         case Encoder_RapidRate:
         case Encoder_Spindle_RPM:
-            npos[encoder->id] = encoder->position = 0;
-            hal.encoder.reset(encoder->id);
-            reset_override(encoder->mode);
+            enc->npos = 0;
+            encoder->reset(encoder);
+            reset_override(enc->mode);
             break;
 
         case Encoder_MPG:
@@ -499,13 +544,13 @@ static void encoder_event (encoder_t *encoder, int32_t position)
 #endif
 
             mpg_spin_lock = true;
-            if(encoder->event.click) {;
-                mpg[encoder->axis].event.scale = On;
-                mpg_event.mask |= (1 << encoder->axis);
+            if(events->click) {;
+                mpg[enc->axis].event.scale = On;
+                mpg_event.mask |= (1 << enc->axis);
             }
-            if(encoder->event.dbl_click) {
-                mpg[encoder->axis].event.zero = On;
-                mpg_event.mask |= (1 << encoder->axis);
+            if(events->dbl_click) {
+                mpg[enc->axis].event.zero = On;
+                mpg_event.mask |= (1 << enc->axis);
             }
             mpg_spin_lock = false;
             break;
@@ -514,7 +559,7 @@ static void encoder_event (encoder_t *encoder, int32_t position)
             break;
     }
 
-    encoder->event.events = 0;
+    events->value = 0;
 }
 
 static void encoder_rt_report(stream_write_ptr stream_write, report_tracking_flags_t report)
@@ -528,6 +573,143 @@ static void encoder_rt_report(stream_write_ptr stream_write, report_tracking_fla
         on_realtime_report(stream_write, report);
 }
 
+static bool encoder_bind (my_encoder_t *enc, encoder_t *encoder)
+{
+    uint_fast8_t idx = 0;
+
+    override_encoder = NULL;
+
+    enc->axis = 0xFF;
+    enc->encoder = encoder;
+
+    encoder_cfg_t cfg = {
+        .dbl_click_window = enc->settings->dbl_click_window,
+        .vel_timeout = enc->settings->mode >= Encoder_MPG ? QEI_VELOCITY_TIMEOUT : 0
+    };
+
+    encoder->configure(encoder, &cfg);
+
+    switch((enc->mode = enc->settings->mode)) {
+
+        case Encoder_Universal:
+            enc->mode = Encoder_FeedRate;
+            override_encoder = enc;
+            break;
+
+        case Encoder_MPG:
+            {
+                uint_fast8_t i;
+                enc->axis = X_AXIS;
+                for(i = 0; i < N_AXIS; i++)
+                    mpg[idx].enc = enc;
+                has_mpg_encoder = true;
+            }
+            break;
+
+        case Encoder_MPG_X:
+            enc->axis = X_AXIS;
+            mpg[X_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+
+        case Encoder_MPG_Y:
+            enc->axis = Y_AXIS;
+            mpg[Y_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+
+        case Encoder_MPG_Z:
+            enc->axis = Z_AXIS;
+            mpg[Z_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#ifdef A_AXIS
+        case Encoder_MPG_A:
+            enc->axis = A_AXIS;
+            mpg[A_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#endif
+#ifdef B_AXIS
+        case Encoder_MPG_B:
+            enc->axis = B_AXIS;
+            mpg[B_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#endif
+#ifdef C_AXIS
+        case Encoder_MPG_C:
+            enc->axis = C_AXIS;
+            mpg[C_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#endif
+#ifdef U_AXIS
+        case Encoder_MPG_U:
+            enc->axis = U_AXIS;
+            mpg[U_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#endif
+#ifdef V_AXIS
+        case Encoder_MPG_V:
+            enc->axis = V_AXIS;
+            mpg[V_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#endif
+#ifdef W_AXIS
+        case Encoder_MPG_W:
+            enc->axis = W_AXIS;
+            mpg[W_AXIS].enc = enc;
+            has_mpg_encoder = true;
+            break;
+#endif
+        default:
+            break;
+    }
+
+    encoder->reset(encoder);
+
+    for(idx = 0; idx < N_AXIS; idx++) {
+        mpg[idx].scale_factor = 1.0f;
+//        mpg[idx].handler = mpg_move_absolute;
+        mpg[idx].handler = mpg_jog_relative;
+    }
+
+#if COMPATIBILITY_LEVEL <= 1
+    if(override_encoder) {
+        if(on_realtime_report == NULL) {
+            on_realtime_report = grbl.on_realtime_report;
+            grbl.on_realtime_report = encoder_rt_report;
+        }
+    } else if(on_realtime_report) {
+        grbl.on_realtime_report = encoder_rt_report;
+        on_realtime_report = grbl.on_realtime_report;
+    }
+#endif
+
+    task_delete(encoder_poll, NULL);
+
+    if(has_mpg_encoder)
+        task_add_systick(encoder_poll, NULL);
+
+    return true;
+}
+
+// Claim "simple" encoders (bidirectional and with select button when available)
+static bool encoder_claim (encoder_t *encoder, void *data)
+{
+    static const encoder_caps_t caps = { .bidirectional = On, .select = On };
+
+    if((encoder->caps.mask & caps.mask) && !(encoder->caps.mask & ~caps.mask) && encoder->claim(encoder_event, &enc[n_encoder])) {
+        enc->settings = &encoders[n_encoder];
+        encoder_bind(&enc[n_encoder++], encoder);
+    }
+
+    return true;
+}
+
 // Settings handling
 
 static encoder_setting_id_t normalize_id (setting_id_t setting, uint_fast16_t *idx)
@@ -539,7 +721,7 @@ static encoder_setting_id_t normalize_id (setting_id_t setting, uint_fast16_t *i
     return (encoder_setting_id_t)setting_idx;
 }
 
-// Store encoder configuration. Encoder numbering sequence set by n_encoder define.
+// Store encoder configuration.
 static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t value)
 {
     uint_fast16_t idx;
@@ -547,33 +729,43 @@ static status_code_t encoder_set_value (setting_id_t setting, uint_fast16_t valu
 
     setting = normalize_id(setting, &idx);
 
-    if(idx < n_encoder) switch((encoder_setting_id_t)setting) {
+    if(idx < n_encoder) {
 
-        case Setting_EncoderMode:
-            if(value < Encoder_Spindle_Position)
-                encoders[idx].mode = (encoder_mode_t)value;
-            else
-                status = Status_InvalidStatement;
-            break;
+        switch((encoder_setting_id_t)setting) {
 
-        case Setting_EncoderCPR:
-            encoders[idx].cpr = (uint32_t)value;
-            break;
+            case Setting_EncoderMode:
+                if(value < Encoder_Spindle_Position)
+                    encoders[idx].mode = (encoder_mode_t)value;
+                else
+                    status = Status_InvalidStatement;
+                break;
 
-        case Setting_EncoderCPD:
-            encoders[idx].cpd = (uint32_t)value;
-            break;
+            case Setting_EncoderCPR:
+                encoders[idx].cpr = (uint32_t)value;
+                break;
 
-        case Setting_EncoderDblClickWindow:
-            if(isintf(value) && value != NAN && value >= 100.0f && value <= 900.0f)
-                encoders[idx].dbl_click_window = (uint32_t)value;
-            else
-                status = Status_InvalidStatement;
-            break;
+            case Setting_EncoderCPD:
+                encoders[idx].cpd = (uint32_t)value;
+                break;
 
-        default:
-            status = Status_Unhandled;
-            break;
+            case Setting_EncoderDblClickWindow:
+                if(isintf(value) && value != NAN && value >= 100.0f && value <= 900.0f)
+                    encoders[idx].dbl_click_window = (uint32_t)value;
+                else
+                    status = Status_InvalidStatement;
+                break;
+
+            default:
+                status = Status_Unhandled;
+                break;
+        }
+
+        encoder_cfg_t cfg = {
+            .dbl_click_window = encoders[idx].dbl_click_window,
+            .vel_timeout = encoders[idx].mode >= Encoder_MPG ? QEI_VELOCITY_TIMEOUT : 0
+        };
+
+        enc[idx].encoder->configure(enc[idx].encoder, &cfg);
     }
 
     return status;
@@ -643,7 +835,7 @@ static void encoder_settings_restore (void)
 {
     uint_fast8_t idx;
 
-    for(idx = 0; idx < n_encoder; idx++) {
+    for(idx = 0; idx < QEI_ENABLE; idx++) {
         encoders[idx].mode = Encoder_Universal;
         encoders[idx].cpr = 400;
         encoders[idx].cpd = 4;
@@ -657,6 +849,8 @@ static void encoder_settings_load (void)
 {
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&encoders, nvs_address, sizeof(encoders), true) != NVS_TransferResult_OK)
         encoder_settings_restore();
+
+    encoders_enumerate(encoder_claim, NULL);
 }
 
 static bool encoder_settings_iterator (const setting_detail_t *setting, setting_output_ptr callback, void *data)
@@ -673,151 +867,15 @@ static bool encoder_settings_iterator (const setting_detail_t *setting, setting_
 
 //
 
-bool encoder_start (encoder_t *encoder)
-{
-    uint_fast8_t idx;
-    bool has_mpg_encoder = false;
-
-    if(n_encoder == 0)
-        return false;
-
-    override_encoder = NULL;
-
-    for(idx = 0; idx < n_encoder; idx++) {
-
-        encoder[idx].id = idx;
-        encoder[idx].axis = 0xFF;
-        encoder[idx].mode = encoders[idx].mode;
-        encoder[idx].settings = &encoders[idx];
-
-        switch(encoder[idx].settings->mode) {
-
-            case Encoder_Universal:
-                encoder[idx].mode = Encoder_FeedRate;
-                override_encoder = &encoder[idx];
-                break;
-
-            case Encoder_MPG:
-                {
-                    uint_fast8_t i;
-                    encoder[idx].axis = X_AXIS;
-                    for(i = 0; i < N_AXIS; i++)
-                        mpg[i].encoder = &encoder[idx];
-                    has_mpg_encoder = true;
-                }
-                break;
-
-            case Encoder_MPG_X:
-                encoder[idx].axis   = X_AXIS;
-                mpg[X_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-
-            case Encoder_MPG_Y:
-                encoder[idx].axis   = Y_AXIS;
-                mpg[Y_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-
-            case Encoder_MPG_Z:
-                encoder[idx].axis   = Z_AXIS;
-                mpg[Z_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#ifdef A_AXIS
-            case Encoder_MPG_A:
-                encoder[idx].axis   = A_AXIS;
-                mpg[A_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#endif
-#ifdef B_AXIS
-            case Encoder_MPG_B:
-                encoder[idx].axis   = B_AXIS;
-                mpg[B_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#endif
-#ifdef C_AXIS
-            case Encoder_MPG_C:
-                encoder[idx].axis   = C_AXIS;
-                mpg[C_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#endif
-#ifdef U_AXIS
-            case Encoder_MPG_U:
-                encoder[idx].axis   = U_AXIS;
-                mpg[U_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#endif
-#ifdef V_AXIS
-            case Encoder_MPG_V:
-                encoder[idx].axis   = V_AXIS;
-                mpg[V_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#endif
-#ifdef W_AXIS
-            case Encoder_MPG_W:
-                encoder[idx].axis   = W_AXIS;
-                mpg[W_AXIS].encoder = &encoder[idx];
-                has_mpg_encoder = true;
-                break;
-#endif
-            default:
-                break;
-        }
-
-        hal.encoder.reset(idx);
-    }
-
-    for(idx = 0; idx < N_AXIS; idx++) {
-        mpg[idx].scale_factor = 1.0f;
-//        mpg[idx].handler = mpg_move_absolute;
-        mpg[idx].handler = mpg_jog_relative;
-    }
-
-#if COMPATIBILITY_LEVEL <= 1
-    if(override_encoder) {
-        if(on_realtime_report == NULL) {
-            on_realtime_report = grbl.on_realtime_report;
-            grbl.on_realtime_report = encoder_rt_report;
-        }
-    } else if(on_realtime_report) {
-        grbl.on_realtime_report = encoder_rt_report;
-        on_realtime_report = grbl.on_realtime_report;
-    }
-#endif
-
-    if(has_mpg_encoder) {
-        if(!on_execute_realtime) {
-            on_execute_realtime = grbl.on_execute_realtime;
-            grbl.on_execute_realtime = encoder_execute_realtime;
-        }
-    } else if(on_execute_realtime) {
-        grbl.on_execute_realtime = on_execute_realtime;
-        on_execute_realtime = NULL;
-    }
-
-    return true;
-}
-
 static void onReportOptions (bool newopt)
 {
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("ENCODER", "0.09");
+        report_plugin("ENCODER", "0.10");
 }
 
-static uint8_t get_n_encoders (void)
-{
-    return QEI_ENABLE;
-}
-
-bool encoder_init (uint_fast8_t n_encoders)
+bool encoder_init (void)
 {
     static setting_details_t settings_details = {
         .groups = encoder_groups,
@@ -830,13 +888,9 @@ bool encoder_init (uint_fast8_t n_encoders)
         .iterator = encoder_settings_iterator
     };
 
-    if((nvs_address = nvs_alloc(sizeof(encoder_settings_t) * n_encoders))) {
-        n_encoder = n_encoders;
+    if((nvs_address = nvs_alloc(sizeof(encoders)))) {
 
         settings_register(&settings_details);
-
-        hal.encoder.get_n_encoders = get_n_encoders;
-        hal.encoder.on_event = encoder_event;
 
         on_report_options = grbl.on_report_options;
         grbl.on_report_options = onReportOptions;
