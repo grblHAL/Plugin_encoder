@@ -383,24 +383,28 @@ static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *co
     bool update_position = false;
 
     my_encoder_t *enc = (my_encoder_t *)context;
+    encoder_event_t event = *events;
 
-    if(events->click) {
+    events->value = 0;
+
+    if(event.click) {
 
         if(enc->settings->mode == Encoder_Universal) {
+            event.click = Off;
             report_add_realtime(Report_Encoder);
-            events->click = Off;
             enc->mode = enc->mode == Encoder_FeedRate ? Encoder_RapidRate : (enc->mode == Encoder_RapidRate ? Encoder_Spindle_RPM : Encoder_FeedRate);
             task_add_immediate(encoder_report_mode, NULL); // Output mode change message from foreground process.
         } else if(enc->settings->mode == Encoder_MPG) {
+            event.click = Off;
             if(++enc->axis == N_AXIS)
                 enc->axis = X_AXIS;
             mpg[enc->axis].position = enc->npos = enc->position = 0;
-            mpg[enc->axis].event.events = events->events = 0;
+            mpg[enc->axis].event.events = 0;
             encoder->reset(encoder);
         }
     }
 
-    if(events->position_changed) {
+    if(event.position_changed) {
 
 #ifdef UART_DEBUG
         itoa(position, gcode, 10);
@@ -412,7 +416,7 @@ static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *co
 
         int32_t position, n_count = ((position = data->position) * 100L) / (int32_t)enc->settings->cpr;
 
-        events->position_changed = Off;
+        event.position_changed = Off;
 
         if(n_count != enc->npos || data->velocity == 0) switch(enc->mode) {
 
@@ -510,14 +514,16 @@ static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *co
         }
     }
 
-    if(events->events) switch(enc->mode) {
+    if(event.events) switch(enc->mode) {
 
         case Encoder_FeedRate:
         case Encoder_RapidRate:
         case Encoder_Spindle_RPM:
-            enc->npos = 0;
-            encoder->reset(encoder);
-            reset_override(enc->mode);
+            if(event.dbl_click) {
+                enc->npos = 0;
+                encoder->reset(encoder);
+                reset_override(enc->mode);
+            }
             break;
 
         case Encoder_MPG:
@@ -542,13 +548,12 @@ static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *co
 #ifdef W_AXIS
         case Encoder_MPG_W:
 #endif
-
             mpg_spin_lock = true;
-            if(events->click) {;
+            if(event.click) {;
                 mpg[enc->axis].event.scale = On;
                 mpg_event.mask |= (1 << enc->axis);
             }
-            if(events->dbl_click) {
+            if(event.dbl_click) {
                 mpg[enc->axis].event.zero = On;
                 mpg_event.mask |= (1 << enc->axis);
             }
@@ -558,8 +563,6 @@ static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *co
         default:
             break;
     }
-
-    events->value = 0;
 }
 
 static void encoder_rt_report(stream_write_ptr stream_write, report_tracking_flags_t report)
@@ -702,7 +705,7 @@ static bool encoder_claim (encoder_t *encoder, void *data)
 {
     static const encoder_caps_t caps = { .bidirectional = On, .select = On };
 
-    if((encoder->caps.mask & caps.mask) && !(encoder->caps.mask & ~caps.mask) && encoder->claim(encoder_event, &enc[n_encoder])) {
+    if((encoder->caps.mask & caps.mask) && !(encoder->caps.mask & ~caps.mask) && encoder->claim(encoder, encoder_event, &enc[n_encoder])) {
         enc->settings = &encoders[n_encoder];
         encoder_bind(&enc[n_encoder++], encoder);
     }
@@ -872,7 +875,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("ENCODER", "0.10");
+        report_plugin("ENCODER", "0.11");
 }
 
 bool encoder_init (void)
