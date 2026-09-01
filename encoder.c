@@ -451,6 +451,13 @@ static void encoder_event (encoder_t *encoder, encoder_event_t *events, void *co
                     case RAPID_OVERRIDE_LOW:
                         if(position > enc->position)
                             grbl.enqueue_realtime_command(CMD_OVERRIDE_RAPID_MEDIUM);
+                        else
+                            grbl.enqueue_realtime_command(RAPID_OVERRIDE_EXTRA_LOW);
+                        break;
+
+                    case RAPID_OVERRIDE_EXTRA_LOW:
+                        if(position > enc->position)
+                            grbl.enqueue_realtime_command(RAPID_OVERRIDE_LOW);
                         break;
 
                     default:
@@ -868,6 +875,13 @@ static bool encoder_settings_iterator (const setting_detail_t *setting, setting_
     return true;
 }
 
+static setting_id_t encoder_settings_normalize (setting_id_t id)
+{
+    return id >= Setting_EncoderSettingsBase && id <= Setting_EncoderSettingsMax
+            ? (setting_id_t)(Setting_EncoderSettingsBase + (id % ENCODER_SETTINGS_INCREMENT))
+            : id;
+}
+
 //
 
 static void onReportOptions (bool newopt)
@@ -888,7 +902,8 @@ bool encoder_init (void)
         .save = encoder_settings_save,
         .load = encoder_settings_load,
         .restore = encoder_settings_restore,
-        .iterator = encoder_settings_iterator
+        .iterator = encoder_settings_iterator,
+        .normalize = encoder_settings_normalize
     };
 
     if((nvs_address = nvs_alloc(sizeof(encoders)))) {
