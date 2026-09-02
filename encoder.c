@@ -865,21 +865,24 @@ static void encoder_settings_load (void)
 
 static bool encoder_settings_iterator (const setting_detail_t *setting, setting_output_ptr callback, void *data)
 {
+    bool ok = true;
     uint_fast16_t idx, instance;
 
     normalize_id(setting->id, &instance);
 
-    for(idx = 0; idx < QEI_ENABLE; idx++)
-        callback(setting, idx * ENCODER_SETTINGS_INCREMENT + instance, data);
+    for(idx = 0; idx < QEI_ENABLE; idx++) {
+        if(!(ok = callback(setting, idx * ENCODER_SETTINGS_INCREMENT + instance, data)))
+            break;
+    }
 
-    return true;
+    return ok;
 }
 
 static setting_id_t encoder_settings_normalize (setting_id_t id)
 {
     return id >= Setting_EncoderSettingsBase && id <= Setting_EncoderSettingsMax
             ? (setting_id_t)(Setting_EncoderSettingsBase + (id % ENCODER_SETTINGS_INCREMENT))
-            : id;
+            : (setting_id_t)0;
 }
 
 //
@@ -889,7 +892,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("ENCODER", "0.11");
+        report_plugin("ENCODER", "0.12");
 }
 
 bool encoder_init (void)
